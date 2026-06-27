@@ -11,8 +11,10 @@ import {
 } from "@band-app/ui";
 import { FolderOpen, Info } from "lucide-react";
 import { useEffect, useState } from "react";
+import { isRemoteServer } from "../../lib/remote-server";
 import { useAdapter, useCapabilities } from "../context";
 import { useAddProject } from "../hooks/use-project-mutations";
+import { ServerFolderBrowser } from "./ServerFolderBrowser";
 
 interface Props {
   open: boolean;
@@ -28,9 +30,21 @@ export function AddProjectDialog({ open, onOpenChange, defaultLabel }: Props) {
   // instead of only on submit because the user benefits from knowing up-front
   // what they're signing up for — see #427's "show a one-line note" requirement.
   const [isGitRepo, setIsGitRepo] = useState<boolean | null>(null);
+  const [serverBrowserOpen, setServerBrowserOpen] = useState(false);
   const addProjectMutation = useAddProject();
   const adapter = useAdapter();
   const capabilities = useCapabilities();
+
+  // In remote mode the desktop shell's native macOS picker would browse
+  // the user's Mac, not the server the dashboard is served from. When the
+  // server exposes the read-only `serverFs` browse endpoint, swap the
+  // native picker for the in-app server folder browser so "Register
+  // Project" points at the SERVER's filesystem. Local/native mode keeps
+  // the existing native picker untouched.
+  const useServerBrowser = isRemoteServer() && Boolean(adapter.listServerDirectories);
+  // Show a browse button when either the native picker is available
+  // (local desktop) OR we can browse the server (remote).
+  const showBrowseButton = useServerBrowser || Boolean(capabilities.pickFolder);
 
   const resetAndClose = () => {
     setPath("");
@@ -95,6 +109,13 @@ export function AddProjectDialog({ open, onOpenChange, defaultLabel }: Props) {
   };
 
   const handleBrowse = async () => {
+    // Remote mode: open the in-app server folder browser instead of the
+    // native macOS picker (which would browse the user's Mac, not the
+    // server).
+    if (useServerBrowser) {
+      setServerBrowserOpen(true);
+      return;
+    }
     if (!capabilities.pickFolder) return;
     try {
       const selected = await capabilities.pickFolder();
@@ -105,6 +126,11 @@ export function AddProjectDialog({ open, onOpenChange, defaultLabel }: Props) {
     } catch {
       // Dialog cancelled
     }
+  };
+
+  const handleServerSelect = (absolutePath: string) => {
+    setPath(absolutePath);
+    setIsGitRepo(null);
   };
 
   const isBusy = addProjectMutation.isPending;
@@ -130,8 +156,15 @@ export function AddProjectDialog({ open, onOpenChange, defaultLabel }: Props) {
                 onChange={handlePathChange}
                 autoFocus
               />
-              {capabilities.pickFolder && (
-                <Button type="button" variant="ghost" size="icon" onClick={handleBrowse}>
+              {showBrowseButton && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  onClick={handleBrowse}
+                  title={useServerBrowser ? "Browse server folders" : "Browse folders"}
+                  aria-label={useServerBrowser ? "Browse server folders" : "Browse folders"}
+                >
                   <FolderOpen />
                 </Button>
               )}
@@ -156,6 +189,14 @@ export function AddProjectDialog({ open, onOpenChange, defaultLabel }: Props) {
           </DialogFooter>
         </form>
       </DialogContent>
+      {useServerBrowser && (
+        <ServerFolderBrowser
+          open={serverBrowserOpen}
+          onOpenChange={setServerBrowserOpen}
+          onSelect={handleServerSelect}
+          initialPath={path.trim() || undefined}
+        />
+      )}
     </Dialog>
   );
 }
