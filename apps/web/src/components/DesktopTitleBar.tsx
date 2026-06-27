@@ -13,7 +13,9 @@ import { type ReactNode, useEffect, useState } from "react";
 import { useIsFullscreen } from "../hooks/useIsFullscreen";
 import { invoke as desktopInvoke } from "../lib/desktop-ipc";
 import { isDesktop } from "../lib/is-desktop";
+import { isRemoteServer } from "../lib/remote-server";
 import { EditorPicker } from "./EditorPicker";
+import { RemoteServerBadge } from "./RemoteServerBadge";
 
 // Native window dragging is wired via CSS `-webkit-app-region: drag` on the
 // title-bar root, with `no-drag` reapplied to the interactive children
@@ -97,6 +99,11 @@ export function DesktopTitleBar({
   // desktop-only so it doesn't render a non-functional button in the web app.
   const hasEditorPicker = isDesktop && workspaceName && workspacePath;
   const hasPanels = workspaceName && panelItems && panelItems.length > 0 && onTogglePanelVisibility;
+  // The remote-server badge appears whenever the dashboard is served by a
+  // non-localhost host, independent of whether a workspace is open — so
+  // the right-side cluster must render for it even when there's no editor
+  // picker / panel switcher.
+  const showRemoteBadge = isRemoteServer();
 
   return (
     <div
@@ -227,11 +234,13 @@ export function DesktopTitleBar({
         </span>
       )}
 
-      {(hasEditorPicker || hasPanels) && (
+      {(hasEditorPicker || hasPanels || showRemoteBadge) && (
         <div
           className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1 pointer-events-auto"
           style={NO_DRAG_STYLE}
         >
+          {showRemoteBadge && <RemoteServerBadge />}
+
           {hasEditorPicker && (
             <EditorPicker workspacePath={workspacePath} onCopyPath={onCopyPath} />
           )}

@@ -53,6 +53,7 @@ import { prereqsRouter } from "./prereqs/router";
 import { projectsRouter } from "./projects/router";
 import { queueRouter } from "./queue/router";
 import { reportsRouter } from "./reports/router";
+import { serverFsRouter } from "./server-fs/router";
 import { sessionsRouter } from "./sessions/router";
 import { settingsRouter } from "./settings/router";
 import { skillsRouter } from "./skills/router";
@@ -78,6 +79,9 @@ export const appRouter = t.router({
   browserLayout: browserLayoutRouter,
   tasks: tasksRouter,
   sessions: sessionsRouter,
+  // Read-only browse of the SERVER's filesystem (remote-mode folder
+  // picker). See `server-fs/router.ts` for the security posture.
+  serverFs: serverFsRouter,
   ...terminalsRouters,
   cli: cliRouter,
   hooks: hooksRouter,

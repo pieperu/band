@@ -13,6 +13,7 @@ import type {
   GitStatus,
   HooksStatus,
   ProjectInfo,
+  ServerDirListing,
   Settings,
   WorkspaceDiff,
   WorkspaceDiffSummary,
@@ -76,6 +77,10 @@ export class WebDashboardAdapter implements DashboardAdapter {
 
   async gitInit(path: string): Promise<void> {
     await this.trpc.projects.gitInit.mutate({ path });
+  }
+
+  async listServerDirectories(path?: string): Promise<ServerDirListing> {
+    return (await this.trpc.serverFs.list.query(path ? { path } : undefined)) as ServerDirListing;
   }
 
   async promoteProjectToGit(name: string): Promise<void> {

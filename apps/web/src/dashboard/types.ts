@@ -316,6 +316,28 @@ export interface FileContentResult {
   language?: string;
 }
 
+/** One subdirectory in a server-filesystem browse listing. */
+export interface ServerDirEntry {
+  /** Directory name (basename only). */
+  name: string;
+  /** Absolute path on the server. */
+  path: string;
+  /** Whether this directory is itself a git repository. */
+  isGitRepo: boolean;
+}
+
+/** Result of browsing one directory on the SERVER's filesystem. */
+export interface ServerDirListing {
+  /** The absolute, normalised path that was listed. */
+  path: string;
+  /** Parent directory, or `null` when `path` is a filesystem root. */
+  parent: string | null;
+  /** The server user's home directory (a "jump home" anchor). */
+  home: string;
+  /** Immediate subdirectories, sorted case-insensitively by name. */
+  entries: ServerDirEntry[];
+}
+
 export interface WorkspaceDiffSummary {
   stats: { filesChanged: number; insertions: number; deletions: number };
   /** Branch the diff was computed against — user's pick, or defaults to `defaultBranch`. */

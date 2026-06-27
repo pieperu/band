@@ -10,6 +10,7 @@ import type {
   GitStatus,
   HooksStatus,
   ProjectInfo,
+  ServerDirListing,
   Settings,
   WorkspaceDiff,
   WorkspaceDiffSummary,
@@ -27,6 +28,19 @@ export interface DashboardAdapter {
   updateProjectLabel(name: string, label: string | null): Promise<void>;
   checkPath(path: string): Promise<{ isGitRepo: boolean }>;
   gitInit(path: string): Promise<void>;
+
+  /**
+   * Browse the SERVER's filesystem — list the immediate subdirectories of
+   * an absolute path on the box the Band server runs on. Powers the in-app
+   * folder picker the "Register Project" dialog shows in remote mode
+   * (`BAND_SERVER_URL`), where the desktop shell's native macOS picker
+   * would browse the user's Mac rather than the server. Read-only.
+   *
+   * Omit `path` to default to the server user's home directory. Optional —
+   * older servers won't expose the `serverFs` route, but every server this
+   * client ships against does.
+   */
+  listServerDirectories?(path?: string): Promise<ServerDirListing>;
   /**
    * Promote a "plain" project to "git": runs `git init` in the project
    * folder and flips the project's kind. Server-side rejects if the
