@@ -204,11 +204,60 @@ SHIM
   # so they only exist in the root node_modules/.pnpm store.
   MONO_ROOT="$(cd ../.. && pwd)"
 
-  # NOTE: We deliberately do NOT bundle the @anthropic-ai/claude-agent-sdk
-  # platform-specific native binary (~206MB on macOS arm64). Bundling it
-  # makes the Electron app balloon to ~300MB. Band users are developers using
-  # AI coding agents, so they already have `claude` installed on PATH —
-  # the SDK resolves it from there at runtime.
+  # -----------------------------------------------------------------------
+  # @anthropic-ai/claude-agent-sdk native CLI binary.
+  #
+  # The bundled SDK resolves its platform-specific `claude` binary at runtime
+  # via `createRequire(import.meta.url).resolve(...)` relative to
+  # `dist/start-server.mjs`. Its resolver (sdk.mjs::N7) tries, in order:
+  #   linux:  @anthropic-ai/claude-agent-sdk-linux-<arch>-musl/claude
+  #           @anthropic-ai/claude-agent-sdk-linux-<arch>/claude
+  #   other:  @anthropic-ai/claude-agent-sdk-<platform>-<arch>/claude
+  # If none resolve, it throws "Native CLI binary for <platform>-<arch> not
+  # found ..." and Claude's model list comes back empty.
+  #
+  # On MACOS / WINDOWS desktop (Electron) builds we deliberately DON'T copy it
+  # (~240MB; balloons the app). Those users already have `claude` on PATH, and
+  # the SDK falls back to it. We ONLY ship the binary on Linux server builds
+  # (the self-hosted band-server box), where there is no interactive `claude`
+  # install to fall back to.
+  #
+  # glibc Linux → linux-<arch>; musl Linux → linux-<arch>-musl. We detect musl
+  # via ldd and copy whichever native package(s) exist in the pnpm store.
+  # Mirrors the node-pty / ripgrep copy pattern above. Idempotent (the rm -rf
+  # at the top of this guard already cleared dist/node_modules).
+  # -----------------------------------------------------------------------
+  SDK_HOST_PLATFORM="$(node -e 'console.log(process.platform)')"
+  if [ "$SDK_HOST_PLATFORM" = "linux" ]; then
+    SDK_HOST_ARCH="$(node -e 'console.log(process.arch)')"
+    # musl libc (e.g. Alpine) reports "musl" in `ldd --version` on stderr.
+    if ldd --version 2>&1 | grep -qi musl; then
+      SDK_NATIVE_PKGS="@anthropic-ai/claude-agent-sdk-linux-${SDK_HOST_ARCH}-musl"
+    else
+      SDK_NATIVE_PKGS="@anthropic-ai/claude-agent-sdk-linux-${SDK_HOST_ARCH}"
+    fi
+    SDK_COPIED=0
+    for pkg in $SDK_NATIVE_PKGS; do
+      # The native package is an optional dep of @anthropic-ai/claude-agent-sdk
+      # and lives only in the root pnpm store. Find its real directory.
+      pkg_dir="$(find "$MONO_ROOT/node_modules/.pnpm" \
+        -path "*/node_modules/${pkg}/package.json" -type f 2>/dev/null \
+        | head -1 | xargs -r dirname)"
+      if [ -z "$pkg_dir" ]; then
+        echo "WARNING: native SDK package ${pkg} not found in store; Claude may be unavailable at runtime." >&2
+        continue
+      fi
+      mkdir -p "dist/node_modules/${pkg}"
+      # cp -RL dereferences the store hardlink so the standalone bundle is
+      # self-contained (package.json + the large `claude` binary).
+      cp -RL "$pkg_dir"/* "dist/node_modules/${pkg}/"
+      chmod +x "dist/node_modules/${pkg}/claude" 2>/dev/null || true
+      SDK_COPIED=1
+    done
+    if [ "$SDK_COPIED" != "1" ]; then
+      echo "WARNING: no @anthropic-ai/claude-agent-sdk native binary copied; Claude model refresh will fail with 'Native CLI binary ... not found'." >&2
+    fi
+  fi
 
   # Copy Codex SDK package.json so createRequire(import.meta.url).resolve("@openai/codex/package.json")
   # works from dist/. The actual codex CLI binary is expected to be installed on the user's system.
