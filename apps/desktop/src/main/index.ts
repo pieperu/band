@@ -23,7 +23,7 @@ import { installAppMenu } from "./menu.js";
 import { type ActivityMonitorHandle, startActivityMonitor } from "./services/activity-monitor.js";
 import { createLogger } from "./services/log.js";
 import { killPort } from "./services/port.js";
-import { getConfiguredPort, getWebBrowserCdpEnabled } from "./services/settings.js";
+import { getConfiguredPort, getWebBrowserCdpEnabled, tryGetToken } from "./services/settings.js";
 import { resolveWebDir } from "./services/web-paths.js";
 import { ensureWebserverRunning, ManagedProcess } from "./services/web-server.js";
 import {
@@ -117,6 +117,21 @@ async function resolveDashboardUrl(): Promise<string> {
   if (!app.isPackaged && devUrl) {
     state.port = Number.parseInt(new URL(devUrl).port || "3456", 10);
     return devUrl;
+  }
+
+  // Thin-client mode: when `BAND_SERVER_URL` is set, skip spawning a local
+  // web server entirely and point the window at a remote Band server (e.g.
+  // `https://band.dev.fipster.com`). The renderer authenticates with the same
+  // `?token=` it would against the local server — sourced from `BAND_TOKEN`
+  // if provided, otherwise the local `~/.band/settings.json` token if one
+  // exists. `state.webDir` stays empty (we don't own a server), so cleanup
+  // and IPC handlers treat it like dev mode. `state.managed` is never spawned.
+  const remoteUrl = process.env.BAND_SERVER_URL?.trim();
+  if (remoteUrl) {
+    const base = remoteUrl.replace(/\/+$/, "");
+    const token = process.env.BAND_TOKEN?.trim() || tryGetToken();
+    state.port = Number.parseInt(new URL(base).port || "443", 10);
+    return token ? `${base}/?token=${encodeURIComponent(token)}` : `${base}/`;
   }
 
   state.webDir = resolveWebDir({
