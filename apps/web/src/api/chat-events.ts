@@ -120,7 +120,33 @@ export async function handleChatEvents(
   // Without (2), the server replays nothing for a "cold" chat that has
   // history on disk, and the client sits on the skeleton forever because
   // `messages.length === 0` AND `initialSessionId` is set. See issue #478.
-  const resolvedSessionId = task?.status === "running" ? task.sessionId : chat?.activeSessionId;
+  let resolvedSessionId = task?.status === "running" ? task.sessionId : chat?.activeSessionId;
+
+  // Cold-subscribe race fallback. The EventSource can connect BEFORE
+  // chats.create's auto-attach has persisted `activeSessionId` (the chat row
+  // exists but the field is still null for a beat), and this stream only
+  // re-resolves the session on a chatId change — so without this it replays
+  // nothing and the pane sits empty on an idle session even though a session
+  // exists on disk. The client passes `workspaceId` for exactly this backfill
+  // case: resolve the latest on-disk session ourselves. Skipped when the user
+  // deliberately cleared the session ("New session" → `sessionCleared`
+  // tombstone) so we don't re-surface a session they just left (issue #478).
+  if (!resolvedSessionId && explicitWorkspaceId && !chat?.sessionCleared) {
+    try {
+      const workspace = workspaceService.resolve(explicitWorkspaceId);
+      if (workspace) {
+        const agent = await agentService.getOrCreateAgent(
+          chatId,
+          workspace.worktree.path,
+          chat?.agent,
+        );
+        const latest = await agent.getLatestSession?.(workspace.worktree.path);
+        if (latest) resolvedSessionId = latest.sessionId;
+      }
+    } catch (err) {
+      log.warn({ chatId, err }, "cold-subscribe latest-session fallback failed");
+    }
+  }
 
   // Initial subscription-opened event.
   emit(writer, {
