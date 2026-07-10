@@ -507,6 +507,10 @@ export class ChatService {
       patch.activeSessionSummary = update.summary ?? null;
       patch.activeSessionLastModified = update.lastModified ?? null;
     }
+    // Tombstone: clearing the active session ("New session") records intent so
+    // the open-flow won't re-promote it; setting a real session resets it.
+    // Gates auto-attach-latest-on-open — see ensureActiveSessionSummary / #478.
+    patch.sessionCleared = patch.activeSessionId == null;
     const merged = this.queries.update(chatId, session, patch);
     this.chatSessions.set(chatId, merged);
   }
@@ -800,12 +804,29 @@ export class ChatService {
         return this.get(chatId);
       }
 
-      // No activeSessionId. Leave it null — the legacy
-      // `agent.getLatestSession` fallback broke the "New session" flow
-      // under the event-log model (handleNewSession clears
-      // activeSessionId to null and the subsequent chats.get refetch
-      // would re-promote the prior session before the new task starts).
-      // See issue #478.
+      // No activeSessionId. Auto-attach the latest on-disk session for this
+      // worktree so a session started OUTSIDE Band (the agent-dashboard
+      // orchestrator, the CLI, or Remote Control) shows up the moment you open
+      // the workspace — the picker filters on cwd, and both sides write the same
+      // `~/.claude/projects/<cwd>` transcript store.
+      //
+      // Gated on the `sessionCleared` tombstone. The legacy unconditional
+      // `getLatestSession` fallback broke the "New session" flow: handleNewSession
+      // clears activeSessionId to null and the subsequent chats.get refetch would
+      // re-promote the prior session (issue #478). The tombstone distinguishes
+      // "user deliberately cleared" (don't re-promote) from "fresh chat that has
+      // never had a session" (attach the latest once).
+      if (!chat.sessionCleared && agent.getLatestSession) {
+        const latest = await agent.getLatestSession(worktreePath);
+        if (latest) {
+          this.updateActiveSession(chatId, {
+            activeSessionId: latest.sessionId,
+            summary: latest.summary,
+            lastModified: latest.lastModified,
+          });
+          return this.get(chatId);
+        }
+      }
       return chat;
     } catch (err) {
       log.warn({ chatId, err }, "ensureActiveSessionSummary failed");

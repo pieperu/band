@@ -55,6 +55,15 @@ export interface ChatRow {
   activeSessionId: string | undefined;
   activeSessionSummary: string | undefined;
   activeSessionLastModified: number | undefined;
+  /**
+   * Tombstone: `true` once the user has explicitly started a "New session"
+   * (cleared the active session). Gates the auto-attach-latest-on-open
+   * behaviour so we surface a session started outside Band on a *fresh* chat,
+   * but never re-promote a session the user deliberately left. Absent/false on
+   * a brand-new or pre-existing row → auto-attach allowed. See issue #478 and
+   * `ChatService.ensureActiveSessionSummary`.
+   */
+  sessionCleared?: boolean;
   status: ChatStatus;
   labels: Record<string, string>;
 }
@@ -74,6 +83,8 @@ export interface ChatUpdatePatch {
   activeSessionId?: string | null;
   activeSessionSummary?: string | null;
   activeSessionLastModified?: number | null;
+  /** See `ChatRow.sessionCleared`. Set on the clear/set-session paths. */
+  sessionCleared?: boolean;
   status?: ChatStatus;
   /**
    * When supplied, replaces the `labels` column. Pass `{}` to clear (the
@@ -98,6 +109,7 @@ interface ChatStateBlob {
   activeSessionId?: string | null;
   activeSessionSummary?: string | null;
   activeSessionLastModified?: number | null;
+  sessionCleared?: boolean | null;
   status: ChatStatus;
 }
 
@@ -109,6 +121,7 @@ function serializeState(row: {
   activeSessionId: string | undefined | null;
   activeSessionSummary: string | undefined | null;
   activeSessionLastModified: number | undefined | null;
+  sessionCleared?: boolean;
   status: ChatStatus;
 }): string {
   const blob: ChatStateBlob = {
@@ -119,6 +132,7 @@ function serializeState(row: {
     activeSessionId: row.activeSessionId ?? null,
     activeSessionSummary: row.activeSessionSummary ?? null,
     activeSessionLastModified: row.activeSessionLastModified ?? null,
+    sessionCleared: row.sessionCleared ?? null,
     status: row.status,
   };
   return JSON.stringify(blob);
@@ -227,6 +241,8 @@ export class ChatQueries {
         patch.activeSessionLastModified === undefined
           ? current.activeSessionLastModified
           : (patch.activeSessionLastModified ?? undefined),
+      sessionCleared:
+        patch.sessionCleared === undefined ? current.sessionCleared : patch.sessionCleared,
       status: patch.status ?? current.status,
       labels: patch.labels ?? current.labels,
     };
@@ -287,6 +303,7 @@ export class ChatQueries {
         activeSessionId: parsed.activeSessionId ?? undefined,
         activeSessionSummary: parsed.activeSessionSummary ?? undefined,
         activeSessionLastModified: parsed.activeSessionLastModified ?? undefined,
+        sessionCleared: parsed.sessionCleared ?? undefined,
         status: parsed.status,
         labels: parseLabels(row.labels, row.id),
       });
