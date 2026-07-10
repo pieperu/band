@@ -366,6 +366,36 @@ export class WorkspaceService {
       return { ok: true, path: existing.path };
     }
 
+    // Adopt an existing on-disk worktree for this branch instead of minting a
+    // second one. Another tool may already own a worktree for the branch — the
+    // agent-dashboard orchestrator, the Claude Remote Control `--spawn=worktree`
+    // path, or a prior manual `git worktree add`. Keeping ONE worktree per branch
+    // is what lets a session started elsewhere stay visible/resumable here (the
+    // session picker filters on `session.cwd === worktree.path`), and it avoids
+    // `git worktree add -b <branch>` failing outright because the branch is
+    // already checked out in another worktree. Queried live from git so we don't
+    // depend on `syncWorktrees` having imported it yet. Best-effort: on any git
+    // read error we fall through to the normal create path.
+    try {
+      const onDisk = (await listWorktrees(project.path)).find(
+        (wt) => !wt.isBare && wt.branch === input.branch,
+      );
+      if (onDisk) {
+        project.worktrees.push({ branch: input.branch, path: onDisk.path, pinned: false });
+        saveState(state);
+        log.info(
+          { workspaceId: toWorkspaceId(input.project, input.branch), path: onDisk.path },
+          "adopted existing on-disk worktree for branch (skipped git worktree add)",
+        );
+        return { ok: true, path: onDisk.path };
+      }
+    } catch (err) {
+      log.warn(
+        { err, project: input.project, branch: input.branch },
+        "listWorktrees failed during adopt check; creating a fresh worktree",
+      );
+    }
+
     const wtDir = worktreesDir();
     const worktreePath = join(wtDir, input.project, input.branch);
     // Pre-create the `<project>` subdir under the worktrees root so the
