@@ -131,7 +131,16 @@ export async function handleChatEvents(
   // case: resolve the latest on-disk session ourselves. Skipped when the user
   // deliberately cleared the session ("New session" → `sessionCleared`
   // tombstone) so we don't re-surface a session they just left (issue #478).
-  if (!resolvedSessionId && explicitWorkspaceId && !chat?.sessionCleared) {
+  //
+  // Gated to the workspace's FIRST/default chat, mirroring the chats.create
+  // auto-attach. An additional "+ new chat" pane (the workspace already has
+  // other chats) must stay blank — without this gate it would replay the
+  // workspace's latest transcript into a chat meant to start empty. `chat` may
+  // be undefined here (cold subscribe before the row is created), so a lone
+  // just-created row for this chatId still counts as "first".
+  const isFirstChat =
+    !!explicitWorkspaceId && chatService.list(explicitWorkspaceId).every((c) => c.id === chatId);
+  if (!resolvedSessionId && explicitWorkspaceId && !chat?.sessionCleared && isFirstChat) {
     try {
       const workspace = workspaceService.resolve(explicitWorkspaceId);
       if (workspace) {
