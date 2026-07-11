@@ -507,6 +507,10 @@ export class ChatService {
       patch.activeSessionSummary = update.summary ?? null;
       patch.activeSessionLastModified = update.lastModified ?? null;
     }
+    // Tombstone: clearing the active session ("New session") records intent so
+    // the open-flow won't re-promote it; setting a real session resets it.
+    // Gates auto-attach-latest-on-open — see ensureActiveSessionSummary / #478.
+    patch.sessionCleared = patch.activeSessionId == null;
     const merged = this.queries.update(chatId, session, patch);
     this.chatSessions.set(chatId, merged);
   }
@@ -800,15 +804,55 @@ export class ChatService {
         return this.get(chatId);
       }
 
-      // No activeSessionId. Leave it null — the legacy
-      // `agent.getLatestSession` fallback broke the "New session" flow
-      // under the event-log model (handleNewSession clears
-      // activeSessionId to null and the subsequent chats.get refetch
-      // would re-promote the prior session before the new task starts).
-      // See issue #478.
-      return chat;
+      // No activeSessionId — auto-attach the latest on-disk session (reuse the
+      // agent we already created). See attachLatestSession.
+      return (await this.attachLatestSession(chatId, worktreePath, agent)) ?? chat;
     } catch (err) {
       log.warn({ chatId, err }, "ensureActiveSessionSummary failed");
+      return chat;
+    }
+  }
+
+  /**
+   * Adopt the most recent on-disk session for `worktreePath` as this chat's
+   * active session, so a session started OUTSIDE Band (the agent-dashboard
+   * orchestrator, the CLI, or Remote Control) shows up the moment the workspace
+   * is opened — both sides write the same `~/.claude/projects/<cwd>` transcript
+   * store keyed by cwd, and the picker filters on cwd.
+   *
+   * Called from two places: `chats.create` (so the session is present in the
+   * FIRST response the client sees on open — avoids a client render race where
+   * the pane locks onto the session-less create response) and
+   * `ensureActiveSessionSummary` (the `chats.get` lazy path, for rows that
+   * already exist). No-op when the chat already has a session, or was
+   * deliberately cleared via "New session" (the `sessionCleared` tombstone —
+   * this is what stops issue #478's re-promotion), or the worktree has no
+   * on-disk session (a genuinely new branch stays blank). Best-effort: returns
+   * the unchanged chat on any error.
+   *
+   * `agent` may be passed to reuse an already-created adapter (callers that
+   * already have one); otherwise it is resolved from the pool.
+   */
+  async attachLatestSession(
+    chatId: string,
+    worktreePath: string,
+    agent?: Awaited<ReturnType<typeof getOrCreateAgent>>,
+  ): Promise<ChatSession | undefined> {
+    const chat = this.get(chatId);
+    if (!chat || chat.activeSessionId || chat.sessionCleared) return chat;
+    try {
+      const a = agent ?? (await getOrCreateAgent(chatId, worktreePath, chat.agent));
+      if (!a.getLatestSession) return chat;
+      const latest = await a.getLatestSession(worktreePath);
+      if (!latest) return chat;
+      this.updateActiveSession(chatId, {
+        activeSessionId: latest.sessionId,
+        summary: latest.summary,
+        lastModified: latest.lastModified,
+      });
+      return this.get(chatId);
+    } catch (err) {
+      log.warn({ chatId, err }, "attachLatestSession failed");
       return chat;
     }
   }

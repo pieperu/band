@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, unlinkSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -366,64 +366,110 @@ export class WorkspaceService {
       return { ok: true, path: existing.path };
     }
 
-    const wtDir = worktreesDir();
-    const worktreePath = join(wtDir, input.project, input.branch);
-    // Pre-create the `<project>` subdir under the worktrees root so the
-    // first `workspaces.create` call on a freshly-installed Band has
-    // somewhere to land. For slash-containing branch names (e.g.
-    // `feature/my-feature` → `<wtDir>/<project>/feature/my-feature`)
-    // we deliberately do NOT pre-create the in-between segments
-    // (`feature/`): `git worktree add` itself creates every intermediate
-    // directory under its target path, so an extra mkdir here would be
-    // redundant. Verified against `git 2.x` — `git worktree add
-    // /tmp/wt/feature/login -b feature/login` succeeds without the
-    // parent existing.
-    mkdirSync(join(wtDir, input.project), { recursive: true });
+    const workspaceId = toWorkspaceId(input.project, input.branch);
 
-    const { command, env } = gitCmd();
-    const args = ["worktree", "add"];
-    if (input.base) {
-      args.push("-b", input.branch, worktreePath, input.base);
-    } else {
-      args.push("-b", input.branch, worktreePath);
-    }
-
+    // Resolve the worktree path. Adopt an existing on-disk worktree for this
+    // branch if one exists — the agent-dashboard orchestrator, the Claude Remote
+    // Control `--spawn=worktree` path, or a prior manual `git worktree add` may
+    // already own it. Keeping ONE worktree per branch is what lets a session
+    // started elsewhere stay visible/resumable here (the picker filters on
+    // `session.cwd === worktree.path`), and it avoids `git worktree add -b
+    // <branch>` failing outright when the branch is already checked out
+    // elsewhere. Queried live from git so we don't depend on `syncWorktrees`
+    // having imported it yet. Best-effort: on any git read error we fall through
+    // to minting a fresh worktree.
+    //
+    // Crucially, an adopted worktree still flows through the SAME post-create
+    // path below (default chat, setup, prompt dispatch) — only the
+    // worktree-creation + workspace-file copy are skipped — so
+    // `workspaces.create({ branch, prompt })` against a branch another tool
+    // created still dispatches the prompt instead of dropping it.
+    // Canonicalize so the main-checkout guard survives trailing slashes /
+    // symlinks (git may report a realpath'd path). realpathSync throws on a
+    // missing path — fall back to the raw string, which still matches the common
+    // case.
+    const canon = (p: string): string => {
+      try {
+        return realpathSync(p);
+      } catch {
+        return p;
+      }
+    };
+    const projectCanon = canon(project.path);
+    let worktreePath: string | null = null;
     try {
-      // Async — `git worktree add` on a large repo can take 200–500 ms
-      // and the surrounding `create` is already async, so blocking the
-      // event loop for the duration would stall every concurrent SSE
-      // stream / chat event / API request. Mirrors the async `git`
-      // helpers used by `remove` below.
-      await execFileAsync(command, args, { cwd: project.path, env, encoding: "utf-8" });
-    } catch (e) {
-      throw new Error(e instanceof Error ? e.message : String(e));
+      const onDisk = (await listWorktrees(project.path)).find(
+        // Only adopt a LINKED worktree for this branch — NEVER the project's main
+        // checkout (whose path === project.path). git worktree list includes the
+        // main checkout, and adopting it would register the repo root as a
+        // removable Band workspace; a later workspaces.remove could then
+        // `git worktree remove` / `rm -rf` the whole project checkout. (codex P1)
+        (wt) => !wt.isBare && wt.branch === input.branch && canon(wt.path) !== projectCanon,
+      );
+      if (onDisk) worktreePath = onDisk.path;
+    } catch (err) {
+      log.warn(
+        { err, project: input.project, branch: input.branch },
+        "listWorktrees failed during adopt check; creating a fresh worktree",
+      );
+    }
+    const adopted = worktreePath !== null;
+
+    if (!worktreePath) {
+      const wtDir = worktreesDir();
+      worktreePath = join(wtDir, input.project, input.branch);
+      // Pre-create the `<project>` subdir under the worktrees root so the
+      // first `workspaces.create` call on a freshly-installed Band has
+      // somewhere to land. For slash-containing branch names, `git worktree
+      // add` itself creates the intermediate segments, so we don't pre-create
+      // those. Verified against git 2.x.
+      mkdirSync(join(wtDir, input.project), { recursive: true });
+
+      const { command, env } = gitCmd();
+      const args = ["worktree", "add"];
+      if (input.base) {
+        args.push("-b", input.branch, worktreePath, input.base);
+      } else {
+        args.push("-b", input.branch, worktreePath);
+      }
+
+      try {
+        // Async — `git worktree add` on a large repo can take 200–500 ms and the
+        // surrounding `create` is already async, so blocking the event loop
+        // would stall every concurrent SSE stream / chat event / API request.
+        await execFileAsync(command, args, { cwd: project.path, env, encoding: "utf-8" });
+      } catch (e) {
+        throw new Error(e instanceof Error ? e.message : String(e));
+      }
     }
 
     project.worktrees.push({ branch: input.branch, path: worktreePath, pinned: false });
     saveState(state);
-
-    const workspaceId = toWorkspaceId(input.project, input.branch);
+    log.info(
+      { workspaceId, path: worktreePath, adopted },
+      adopted ? "adopted existing on-disk worktree for branch" : "created worktree",
+    );
 
     // Copy declared workspace files from the main checkout into the new
-    // worktree. Driven by `.band/config.json::workspace.copyFiles` and/or
-    // `.worktreeinclude` at the project root — see `copyWorkspaceFiles`
-    // for the union/intersection semantics. Runs AFTER `git worktree add`
-    // (so the destination directory exists) and BEFORE `runSetup` (so the
-    // setup script can read `.env` / local credentials / etc. just like
-    // it can in the main checkout). Missing source files are skipped
-    // with a warning rather than failing the create, matching the
-    // non-fatal contract used by the setup script itself.
-    try {
-      const copied = await copyWorkspaceFiles(project.path, worktreePath);
-      if (copied.length > 0) {
-        log.info({ workspaceId, count: copied.length }, "copied workspace files into new worktree");
+    // worktree (`.band/config.json::workspace.copyFiles` / `.worktreeinclude`).
+    // ONLY for a freshly-created worktree: an adopted one is already populated by
+    // whoever created it, and copying over it could clobber its `.env` / local
+    // files. Runs BEFORE `runSetup` so the setup script can read them. Non-fatal.
+    if (!adopted) {
+      try {
+        const copied = await copyWorkspaceFiles(project.path, worktreePath);
+        if (copied.length > 0) {
+          log.info(
+            { workspaceId, count: copied.length },
+            "copied workspace files into new worktree",
+          );
+        }
+      } catch (err) {
+        // Catch-all backstop. `copyWorkspaceFiles` already logs per-file
+        // failures internally; this guard exists so an unexpected crash doesn't
+        // abort the create flow before the chat pane / setup script run.
+        log.warn({ err, workspaceId }, "copyWorkspaceFiles raised — continuing");
       }
-    } catch (err) {
-      // Catch-all backstop. `copyWorkspaceFiles` already logs per-file
-      // failures internally; this guard exists so an unexpected crash
-      // (e.g. a truly malformed config) doesn't abort the create flow
-      // before the chat pane / setup script have a chance to run.
-      log.warn({ err, workspaceId }, "copyWorkspaceFiles raised — continuing");
     }
 
     // Materialize the default chat pane so the workspace surfaces a

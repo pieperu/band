@@ -93,6 +93,13 @@ interface Props {
   status?: WorkspaceStatus;
   branchStatus?: WorkspaceBranchStatus;
   setupStatus?: SetupStatus;
+  /**
+   * Friendly name of the agent-dashboard orchestrator session running in this
+   * worktree, if any (e.g. "player-editorial-worker"). Shown under the branch
+   * so a worktree is findable by the name it was dispatched under, not just its
+   * git branch. Undefined when no dashboard agent is running here.
+   */
+  liveAgentName?: string;
   isFocused?: boolean;
   onShowDeleteDialog: (info: DeleteDialogInfo) => void;
   /**
@@ -118,6 +125,7 @@ export const WorkspaceCard = memo(function WorkspaceCard({
   status,
   branchStatus,
   setupStatus,
+  liveAgentName,
   isFocused,
   onShowDeleteDialog,
   showProjectName,
@@ -230,11 +238,22 @@ export const WorkspaceCard = memo(function WorkspaceCard({
             <TooltipTrigger asChild>
               <div className="flex items-center gap-2 min-w-0 overflow-hidden">
                 <AgentStatusIndicator agent={status?.agent} isActive={isActive} />
-                <span
-                  className={`text-sm truncate ${isActive ? "font-bold text-foreground" : "font-medium text-muted-foreground"}`}
-                >
-                  {showProjectName ? `${projectName}/${worktree.branch}` : worktree.branch}
-                </span>
+                <div className="flex flex-col min-w-0 overflow-hidden">
+                  <span
+                    className={`text-sm truncate ${isActive ? "font-bold text-foreground" : "font-medium text-muted-foreground"}`}
+                  >
+                    {showProjectName ? `${projectName}/${worktree.branch}` : worktree.branch}
+                  </span>
+                  {liveAgentName && (
+                    <span className="flex items-center gap-1 truncate text-[11px] leading-tight text-amber-500/90">
+                      <span
+                        className="size-1.5 shrink-0 rounded-full bg-amber-500"
+                        aria-hidden="true"
+                      />
+                      <span className="truncate">{liveAgentName}</span>
+                    </span>
+                  )}
+                </div>
               </div>
             </TooltipTrigger>
             {/* Always show the full `project/branch` name in the

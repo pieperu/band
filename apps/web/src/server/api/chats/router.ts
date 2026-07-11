@@ -70,7 +70,7 @@ export const chatsRouter = t.router({
         labels: z.record(z.string(), z.string()).optional(),
       }),
     )
-    .mutation(({ input }) => {
+    .mutation(async ({ input }) => {
       try {
         const chat = chatService.create(input.workspaceId, {
           id: input.id,
@@ -82,6 +82,23 @@ export const chatsRouter = t.router({
           // tRPC is a user-facing surface — never allow callers to set
           // reserved `band:`-prefixed labels.
         });
+        // Auto-attach the latest on-disk session for the workspace's FIRST chat
+        // (the default one the dashboard creates on open) so a session started
+        // outside Band shows up immediately — present in THIS response, which
+        // avoids a client render race where the pane locks onto the session-less
+        // create response before the lazy chats.get attach lands. Additional
+        // "+ new chat" panes (workspace already had chats) stay blank.
+        // Best-effort: falls through to the un-attached chat on any failure.
+        if (chatService.list(input.workspaceId).length === 1) {
+          const workspace = workspaceService.resolve(input.workspaceId);
+          if (workspace) {
+            const attached = await chatService.attachLatestSession(
+              chat.id,
+              workspace.worktree.path,
+            );
+            if (attached) return { chat: attached };
+          }
+        }
         return { chat };
       } catch (err) {
         if (err instanceof InvalidLabelsError) {

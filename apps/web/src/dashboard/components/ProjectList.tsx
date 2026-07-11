@@ -54,6 +54,7 @@ import {
   UNLABELED_KEY,
   useCollapseState,
 } from "../hooks/use-collapse-state";
+import { useLiveAgents } from "../hooks/use-live-agents";
 import { usePinnedWorkspaces } from "../hooks/use-pinned-workspaces";
 import {
   usePromoteProjectToGit,
@@ -124,6 +125,9 @@ function SortableProject({
   onTogglePinned,
 }: SortableProjectProps) {
   const isPlain = project.kind === "plain";
+  // Dashboard-orchestrator live sessions keyed by worktree path — labels a
+  // worktree with the name it was dispatched under (dedupes across projects).
+  const liveAgents = useLiveAgents();
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: project.name,
   });
@@ -415,6 +419,7 @@ function SortableProject({
                   status={statuses.get(wsId)}
                   branchStatus={branchStatuses.get(wsId)}
                   setupStatus={setupStatuses.get(wsId)}
+                  liveAgentName={liveAgents.get(wt.path)?.name}
                   isFocused={currentIndex === focusedIndex}
                   onShowDeleteDialog={onShowDeleteDialog}
                   onTogglePinned={onTogglePinned}

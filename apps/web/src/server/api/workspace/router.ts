@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import { readOrchestratorAgents } from "../../services/_utils/orchestrator-agents";
 import { diffService } from "../../services/diff-service";
 import { editorService } from "../../services/editor-service";
 import { filesService } from "../../services/files-service";
@@ -212,6 +213,12 @@ export const workspaceRouter = t.router({
         unsubscribe();
       }
     }),
+
+  // Live agents spawned by the agent-dashboard orchestrator, keyed by worktree
+  // path, so the sidebar can label a worktree with the dashboard's session name
+  // (e.g. "player-editorial-worker") + a live dot. Best-effort; [] when the
+  // orchestrator isn't present.
+  liveAgents: publicProcedure.query(() => ({ agents: readOrchestratorAgents() })),
 
   listBranches: publicProcedure
     .input(z.object({ workspaceId: z.string() }))
