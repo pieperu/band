@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, unlinkSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -384,10 +384,27 @@ export class WorkspaceService {
     // worktree-creation + workspace-file copy are skipped — so
     // `workspaces.create({ branch, prompt })` against a branch another tool
     // created still dispatches the prompt instead of dropping it.
+    // Canonicalize so the main-checkout guard survives trailing slashes /
+    // symlinks (git may report a realpath'd path). realpathSync throws on a
+    // missing path — fall back to the raw string, which still matches the common
+    // case.
+    const canon = (p: string): string => {
+      try {
+        return realpathSync(p);
+      } catch {
+        return p;
+      }
+    };
+    const projectCanon = canon(project.path);
     let worktreePath: string | null = null;
     try {
       const onDisk = (await listWorktrees(project.path)).find(
-        (wt) => !wt.isBare && wt.branch === input.branch,
+        // Only adopt a LINKED worktree for this branch — NEVER the project's main
+        // checkout (whose path === project.path). git worktree list includes the
+        // main checkout, and adopting it would register the repo root as a
+        // removable Band workspace; a later workspaces.remove could then
+        // `git worktree remove` / `rm -rf` the whole project checkout. (codex P1)
+        (wt) => !wt.isBare && wt.branch === input.branch && canon(wt.path) !== projectCanon,
       );
       if (onDisk) worktreePath = onDisk.path;
     } catch (err) {
